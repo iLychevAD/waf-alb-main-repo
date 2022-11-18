@@ -17,7 +17,6 @@ Before deploying the resources, some manual modification of the Terraform files 
 ```
 aws cloudformation create-stack --stack-name <SOME NAME> --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --template-body file://demo_install.cfn.yaml --parameters ParameterKey=NamePrefix,ParameterValue="rb-test-task"
 ```
-*Disclaimer*: the template content is partially taken from https://aws.amazon.com/blogs/devops/multi-branch-codepipeline-strategy-with-event-driven-architecture/
 
 So, further goes mostly a theoretical description of what I was planning to have eventually (you can have more idea about implementation details by looking into the CFN template).
 
@@ -35,6 +34,10 @@ module "wa-alb-instance" {
 
 (notice, we dont specify variables for the used module here to simplify this parent module configuration. Instead the values for variables to customize a template for a particular environment are fetched from environment variables, see https://github.com/iLychevAD/waf-alb-template/blob/main/locals.tf. The actual values for those env variables are set inside CodeBuild project).
  
+The template also creates an individual CodePipeline for each branch (such multi-branch implementation for AWS CI tools is taken from https://aws.amazon.com/blogs/devops/multi-branch-codepipeline-strategy-with-event-driven-architecture/ and has nothing to do with the test task).
+So that, when an aforementioned Terraform file is added or updated, a pipeline is triggered and performs `terraform apply`. In a more real life scenario (or if I had finished the test) any commits to the branches would be allowed through pull requests (PRs) only and for the PRs there would be additional CodePipelines to execute `terraform plan`. So, in such case a task's requrements regarding "with different approving parties" would be realized by using a Git repo branch protection rules (or CODEOWNERS for example, but it's not supported by CodeCommit).
+
+Notice that the Terraform template contains no any partivular provider or backend configuration. The latter is substituted dynamically in the pipeline logic (see `TerraformApply` AWS::CodeBuild::Project object in the CFN template). In the same manner there might be added some mapping between environments and AWS accounts (as requested in the task).
 
 ### TO DOs:
 

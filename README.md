@@ -2,13 +2,13 @@
 
 1. The Terraform files to create ALB, WAF and a pretending-to-be-a-web-server AWS Lambda (I decided to use a Lambda instead of a EC2 for a web-server imitation) are in the https://github.com/iLychevAD/waf-alb-template repo.
 
-2 . And this repo contains a pytest script to verify whitelisting works (in the `tests` directory), and a CloudFormation (or `CFN` for brevity) template `demo_install.cfn.yaml` to deploy other components of the solution (more detailed description see below).
+2. And this repo contains a pytest script to verify whitelisting works (in the `tests` directory), and a CloudFormation (or `CFN` for brevity) template `demo_install.cfn.yaml` to deploy other components of the solution (more detailed description see below).
 
 #### 1. Terraform files
 
 The ALB, WAF, Lambda configuration fully meets the task requirement. The whitelisting rules can be checked by the PyTest script.
 
-Before deploying the resources, some manual modification of the Terraform files is required (had no time to fix that) - namelly, you should change a VPC id and Subnets (in the `variables.tf` ot `terrafrom.tfvars` file. In a finished solution that information would be detected automatically either in the pipeline or by Terraform scripts by using `local exec` functionality) as proper for your AWS account (it's implied that a default VPC is used).
+Before deploying the resources, some manual modification of the Terraform files is required (had no time to fix that) - namelly, you should change a VPC id and Subnets (in the `variables.tf` or `terrafrom.tfvars` file. In a finished solution that information would have been detected automatically either in the pipeline or by Terraform scripts by using `local exec` functionality) as proper for your AWS account (it's implied that a default VPC is used).
 
 #### 2. The rest of the solution
 
@@ -42,4 +42,4 @@ module "wa-alb-instance" {
 
 - Pull Requests workflow is not implemented (i.e. when for PRs a CodeBuild executes and displays result of `terraform plan` to give an idead what will happen if the PR is merged)
 
-
+- Security problem: because a Terrform file is allowed in the environments repo, users can put some unexpected Terraform code into it. It can be solved by enforcing some policies in the pipeline logic or by not using a Terraform-valid file (something similar is described in my Gitlab article - https://gitlab.com/iLychevAD/ci-cd-for-a-multi-component-app/-/blob/master/README.md?plain=1#L323)

@@ -1,0 +1,394 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: |
+  RB test task
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: 'rb-test-task'
+
+Resources:
+  TerraformStateS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${NamePrefix}-tf-state-${AWS::Region}-${AWS::AccountId}"
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      #BucketEncryption:
+      #  ServerSideEncryptionConfiguration:
+      #    - ServerSideEncryptionByDefault:
+      #        SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+  TerraformStateS3BucketBucketPolicy:
+    DependsOn:
+      - TerraformStateS3Bucket
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TerraformStateS3Bucket
+      PolicyDocument:
+        Statement:
+          - Sid: DenyDeletingTerraformStateFiles
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:DeleteObject"
+            Resource: !Sub "arn:aws:s3:::${TerraformStateS3Bucket}/*"
+  
+  EnvironmentsRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: EnvironmentsRepo
+      RepositoryDescription: !Sub "${NamePrefix}"
+      Triggers:
+      - Name: CreatePipeline
+        DestinationArn: !GetAtt CreatePipeline.Arn
+        Branches: [] # means all branches
+        Events:
+        - all
+# The foundation id taken from https://github.com/aws-samples/aws-codepipeline-multi-branch-strategy/blob/master/Setup.yaml
+#----------------------------------------------------------------------#
+# EventRule to trigger CreatePipeline lambda
+#----------------------------------------------------------------------#
+  CreatePipelineRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "EventRule"
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        detail:
+          event:
+              - referenceDeleted
+              - referenceCreated
+          referenceType:
+            - branch
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt CreatePipeline.Arn
+        Id: CreatePipeline
+
+  #AmazonCloudWatchEventRole:
+    #Type: AWS::IAM::Role
+    #Properties:
+      #AssumeRolePolicyDocument:
+        #Version: 2012-10-17
+        #Statement:
+          #- Effect: Allow
+            #Principal:
+              #Service:
+                #- events.amazonaws.com
+            #Action: sts:AssumeRole
+      #Path: /
+      #Policies:
+        #- PolicyName: cwe-lambda-execution
+          #PolicyDocument:
+            #Version: 2012-10-17
+            #Statement:
+              #- Effect: Allow
+                #Action: 'lambda:InvokeFunction'
+                #Resource: !GetAtt CreatePipeline.Arn
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CreatePipeline
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+          - CreatePipelineRule
+          - Arn
+#----------------------------------------------------------------------#
+# Role for lambda execution
+#----------------------------------------------------------------------#
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: AWS-CodePipeline-Service-3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+
+#----------------------------------------------------------------------#
+# Role for Pipeline Execution
+#----------------------------------------------------------------------#
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CodePipelineRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeCommitFullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+
+#----------------------------------------------------------------------#
+# Role for CodeBuild Execution
+#----------------------------------------------------------------------#
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CodeBuildRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+#----------------------------------------------------------------------#
+# S3 Bucket to store template
+#----------------------------------------------------------------------#
+  TemplateBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub "${NamePrefix}-tf-state-${AWS::Region}-${AWS::AccountId}"
+
+  TemplateBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TemplateBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+                - s3:*
+            Effect: Allow
+            Resource:
+              - !Sub arn:aws:s3:::${TemplateBucket}
+              - !Sub arn:aws:s3:::${TemplateBucket}/*
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+
+#----------------------------------------------------------------------#
+# Lambda for Stack Creation
+#----------------------------------------------------------------------#
+  CreatePipeline:
+    DependsOn: LambdaRole
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: CreatePipeline
+      Handler: "index.lambda_handler"
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: "python3.8"
+      Timeout: 25
+      Environment:
+        Variables:
+          ENVIRONMENTS_REPO: "EnvironmentsRepo"
+          TERRAFORM_STATE_S3: !Ref TerraformStateS3Bucket
+          TEMPLATES_BUCKET: !Ref TemplateBucket
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import boto3
+          def lambda_handler(event, context):
+              print(f'{json.dumps(event)}')
+              Region=event['region']
+              Account = event['account']
+              RepositoryName = event['detail']['repositoryName']
+              NewBranch = event['detail']['referenceName']
+              TERRAFORM_STATE_S3 = os.environ['TERRAFORM_STATE_S3']
+              TEMPLATES_BUCKET = os.environ['TEMPLATES_BUCKET']
+              Event = event['detail']['event']
+              if RepositoryName != os.environ['ENVIRONMENTS_REPO']:
+                 quit()
+              if NewBranch == "master":
+                 quit()
+              if Event == "referenceCreated":
+                cf_client = boto3.client('cloudformation')
+                cf_client.create_stack(
+                    StackName= f'Pipeline-{RepositoryName}-{NewBranch}',
+                    TemplateBody=pipeline_cfn_tpl,
+                    Parameters=[
+                        {
+                            'ParameterKey': 'RepositoryName',
+                            'ParameterValue': RepositoryName,
+                            'UsePreviousValue': False
+                        },
+                        {
+                            'ParameterKey': 'BranchName',
+                            'ParameterValue': NewBranch,
+                            'UsePreviousValue': False
+                        },
+                        {
+                            'ParameterKey': 'TERRAFORM_STATE_S3',
+                            'ParameterValue': TERRAFORM_STATE_S3,
+                            'UsePreviousValue': False
+                        },
+                        {
+                            'ParameterKey': 'TEMPLATES_BUCKET',
+                            'ParameterValue': TEMPLATES_BUCKET,
+                            'UsePreviousValue': False
+                        }
+                    ],
+                    OnFailure='ROLLBACK',
+                    Capabilities=['CAPABILITY_NAMED_IAM']
+                )
+              else:
+                cf_client = boto3.client('cloudformation')
+                cf_client.delete_stack(
+                    StackName= f'Pipeline-{RepositoryName}-{NewBranch}'
+                  )
+          pipeline_cfn_tpl = '''
+            # Foundation is taken from https://github.com/aws-samples/aws-codepipeline-multi-branch-strategy/blob/master/TemplatePipeline.yaml
+            AWSTemplateFormatVersion: "2010-09-09"
+            Description: "Pipeline Template"
+            Parameters:
+              RepositoryName:
+                Type:  String
+              BranchName:
+                Type:  String
+                Default: "master"
+              Setup:
+                Type: String
+                Default: false
+              TERRAFORM_STATE_S3:
+                Type: String
+                Default: ""
+              TEMPLATES_BUCKET:
+                Type: String
+                Default: ""
+            Conditions: 
+              BranchMaster: !Equals [ !Ref BranchName, "master" ]
+              BranchDevelop: !Equals [ !Ref BranchName, "develop"]
+              #Setup: !Equals [ !Ref Setup, true ]
+            Resources:
+              Pipeline:
+                Type: "AWS::CodePipeline::Pipeline"
+                Properties:
+                  Name: !Join ['-', [!Ref RepositoryName, !Ref BranchName]]
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/CodePipelineRole'
+                  ArtifactStore:
+                    Type: S3
+                    Location: !Ref TEMPLATES_BUCKET
+                  Stages:
+                    - Name: Source
+                      Actions:
+                        - Name: FetchSource
+                          ActionTypeId:
+                            Category: Source
+                            Owner: AWS
+                            Version: "1"
+                            Provider: CodeCommit
+                          Configuration:
+                            RepositoryName: !Ref RepositoryName
+                            BranchName: !Ref BranchName
+                          OutputArtifacts:
+                            - Name: Source 
+                          RunOrder: 1
+                    - Name: Terraform-Apply
+                      Actions:
+                        - Name: Terraform-Apply
+                          ActionTypeId:
+                            Category: Build
+                            Owner: AWS
+                            Version: "1"
+                            Provider: CodeBuild
+                          #OutputArtifacts:
+                          #  - Name: CIAction
+                          InputArtifacts:
+                            - Name: Source 
+                          Configuration:
+                            ProjectName: !Join ['-', [!Ref 'RepositoryName', 'Terraform-Apply' ]]
+                          RunOrder: 1
+              TerraformApply: 
+                Type: AWS::CodeBuild::Project 
+                Properties: 
+                  Name: !Join ['-', [!Ref 'RepositoryName', 'Terraform-Apply' ]]
+                  Source: 
+                    Type: CODEPIPELINE 
+                    BuildSpec: |
+                      version: 0.2
+                      env:
+                        variables:
+                          GIT_REPO_URL: ""
+                      phases:
+                        install:
+                          runtime-versions:
+                            docker: 18
+                        build:
+                          commands:
+                            - set -e -o pipefail
+                            - printenv
+                            - wget https://releases.hashicorp.com/terraform/1.3.5/terraform_1.3.5_linux_amd64.zip
+                            - unzip https://releases.hashicorp.com/terraform/1.3.5/terraform_1.3.5_linux_amd64.zip
+                            - mv ./terraform /usr/local/bin && chmod +x /usr/local/bin/terraform
+                            - |
+                               echo "\
+                               terraform { \
+                                  backend "s3" { \
+                                    bucket = "${TERRAFORM_STATE_S3}" \
+                                    key    = "environment.${ENV_NAME}.tfstate" \
+                                    region = "eu-central-1" \
+                                  } \
+                                }" >> terraform-backend.tf
+                            - terraform init -upgrade
+                            - |
+                              terraform plan
+                              terraform apply -auto-approve
+                            - echo "Done"
+                            - exit 0
+                  Environment: 
+                    Type: LINUX_CONTAINER 
+                    ComputeType: BUILD_GENERAL1_SMALL
+                    Image: aws/codebuild/standard:3.0
+                    EnvironmentVariables:
+                      - Name: BRANCH_NAME 
+                        Value: !Ref BranchName
+                      - Name: ENV_NAME 
+                        Value: !Ref BranchName
+                      - Name: TERRAFORM_STATE_S3
+                        Value: !Ref TERRAFORM_STATE_S3
+                      - Name: TEMPLATES_BUCKET
+                        Value: !Ref TEMPLATES_BUCKET
+                  Artifacts: 
+                    Type: CODEPIPELINE 
+                  ServiceRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/CodeBuildRole'
+                  TimeoutInMinutes: 10
+          '''
+          # End of Lambda content
